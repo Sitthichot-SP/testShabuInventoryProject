@@ -8,7 +8,6 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "atmosphere": "standard"
 }/*EDITMODE-END*/;
 
-// Curated accent palettes that re-tint the whole UI
 const PALETTES = {
   indigo:  { name: 'Indigo',         a300:'#a5b4fc', a400:'#818cf8', a500:'#6366f1', a600:'#4f46e5', glow:'99,102,241',  amb1:'99,102,241',  amb2:'168,85,247' },
   cyan:    { name: 'Cyan Command',   a300:'#67e8f9', a400:'#22d3ee', a500:'#06b6d4', a600:'#0891b2', glow:'34,211,238',  amb1:'34,211,238',  amb2:'99,102,241' },
@@ -35,7 +34,6 @@ function applyTweaks(t) {
   const a = ATMOSPHERES[t.atmosphere] || ATMOSPHERES.standard;
   const r = document.documentElement.style;
 
-  // Accent palette — re-tint everything using --indigo-* (the design's primary)
   r.setProperty('--indigo-300', p.a300);
   r.setProperty('--indigo-400', p.a400);
   r.setProperty('--indigo-500', p.a500);
@@ -44,14 +42,12 @@ function applyTweaks(t) {
   r.setProperty('--amb-1', p.amb1);
   r.setProperty('--amb-2', p.amb2);
 
-  // Density
   r.setProperty('--pad-card', `${d.pad}px`);
   r.setProperty('--gap-stack', `${d.gap}px`);
   r.setProperty('--pad-content', `${d.contentPad}px`);
   r.setProperty('--kpi-val-size', `${d.kpiVal}px`);
   r.setProperty('--card-gap', `${d.cardGap}px`);
 
-  // Atmosphere
   r.setProperty('--blur-amount', `${a.blur}px`);
   r.setProperty('--blur-saturate', `${a.saturate}%`);
   r.setProperty('--ambient-strength', a.ambient);
@@ -61,35 +57,97 @@ function applyTweaks(t) {
   r.setProperty('--glow-size', `${a.glowSize}px`);
 }
 
+// คำนวณ daily series จาก movements จริง (แทน random mock)
+function computeDailySeries(movements) {
+  const series = {};
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    series[label] = { label, in: 0, out: 0 };
+  }
+  for (const m of movements) {
+    const d = new Date(m.ts);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    if (series[label]) {
+      if (m.type === 'IN')  series[label].in  += Number(m.qty);
+      if (m.type === 'OUT') series[label].out += Number(m.qty);
+    }
+  }
+  return Object.values(series);
+}
+
+function isDbConfigured() {
+  try {
+    const url = window.sb?.supabaseUrl || '';
+    return window.sb && !url.includes('YOUR_PROJECT_ID');
+  } catch { return false; }
+}
+
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   useEffect(() => { applyTweaks(t); }, [t.palette, t.density, t.atmosphere]);
 
   const [route, setRoute] = useState('dashboard');
-  const [stock, setStock] = useState(window.DATA.stock);
-  const [movements, setMovements] = useState(window.DATA.movements);
+  const [stock, setStock] = useState([]);
+  const [movements, setMovements] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dbReady, setDbReady] = useState(false);
+  const [dbError, setDbError] = useState(null);
+
+  useEffect(() => {
+    async function load() {
+      if (!isDbConfigured()) {
+        setStock(window.DATA._mockStock);
+        setMovements(window.DATA._mockMovements);
+        setLoading(false);
+        return;
+      }
+      try {
+        const [s, m] = await Promise.all([
+          window.DB.loadStock(),
+          window.DB.loadMovements(),
+        ]);
+        setStock(s);
+        setMovements(m);
+        setDbReady(true);
+      } catch (err) {
+        console.error('Supabase load error:', err);
+        setDbError(err.message);
+        setStock(window.DATA._mockStock);
+        setMovements(window.DATA._mockMovements);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  // Sync window.DATA.stock เพื่อให้ UTIL functions ใช้ข้อมูลล่าสุด
+  useEffect(() => { window.DATA.stock = stock; }, [stock]);
 
   const store = {
-    skus: window.DATA.skus,
-    warehouses: window.DATA.warehouses,
-    suppliers: window.DATA.suppliers,
-    dailySeries: window.DATA.dailySeries,
+    skus:        window.DATA.skus,
+    warehouses:  window.DATA.warehouses,
+    suppliers:   window.DATA.suppliers,
+    dailySeries: computeDailySeries(movements),
     stock,
     movements,
   };
 
-  function doMovement(m) {
+  async function doMovement(m) {
     const now = new Date().toISOString();
-    const id = `MV-2026-${String(143 + movements.length).padStart(4, '0')}`;
+    const id  = `MV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
     const newMov = { id, ts: now, user: 'คุณภาวินี', ...m };
-    setMovements(prev => [newMov, ...prev]);
 
+    // Optimistic update — อัปเดต UI ทันทีโดยไม่รอ DB
+    setMovements(prev => [newMov, ...prev]);
     setStock(prev => {
       const copy = prev.map(s => ({ ...s }));
       if (m.type === 'IN') {
         const existing = copy.find(s => s.sku === m.sku && s.wh === m.wh && s.bin === m.bin && s.batch === m.batch);
         if (existing) existing.qty += m.qty;
-        else copy.push({ sku: m.sku, wh: m.wh, bin: m.bin, qty: m.qty, batch: m.batch || `B26-${Math.floor(140+Math.random()*60)}`, exp: m.exp || '2026-12-31' });
+        else copy.push({ sku: m.sku, wh: m.wh, bin: m.bin, qty: m.qty, batch: m.batch || `B${String(new Date().getFullYear()).slice(-2)}-${Math.floor(140+Math.random()*60)}`, exp: m.exp || null });
       } else if (m.type === 'OUT') {
         let remaining = m.qty;
         const candidates = copy.filter(s => s.sku === m.sku && s.wh === m.wh && s.bin === m.bin)
@@ -100,8 +158,8 @@ function App() {
           c.qty -= take; remaining -= take;
         }
       } else if (m.type === 'MV') {
-        const [fromWh, toWh] = (m.wh || '').split('->');
-        const [fromBin, toBin] = (m.bin || '').split('→');
+        const [fromWh, toWh] = (m.wh || '->').split('->');
+        const [fromBin, toBin] = (m.bin || '→').split('→');
         const fromItems = copy.filter(s => s.sku === m.sku && s.wh === fromWh && s.bin === fromBin)
                               .sort((a,b) => new Date(a.exp) - new Date(b.exp));
         let remaining = m.qty;
@@ -120,6 +178,13 @@ function App() {
       }
       return copy.filter(s => s.qty > 0.0001);
     });
+
+    // Persist to Supabase (fire-and-forget)
+    if (dbReady) {
+      window.DB.persistMovement(newMov).catch(err =>
+        console.error('DB write error:', err)
+      );
+    }
   }
 
   const meta = {
@@ -135,9 +200,7 @@ function App() {
 
   const lowStockCount = window.DATA.skus.filter(s => {
     const total = stock.filter(x => x.sku === s.id).reduce((a,b) => a+b.qty, 0);
-    if (total <= 0) return true;
-    if (total < s.min) return true;
-    return false;
+    return total <= 0 || total < s.min;
   }).length;
 
   const fabAction = {
@@ -146,10 +209,20 @@ function App() {
     location:  { icon: 'plus', label: 'เพิ่ม Bin', go: () => {} },
   }[route];
 
-  // Palette swatch options for TweakColor
   const paletteOptions = Object.entries(PALETTES).map(([k, p]) => [p.a400, p.a500, p.a600]);
   const paletteKeys    = Object.keys(PALETTES);
   const currentPalette = paletteOptions[paletteKeys.indexOf(t.palette)] || paletteOptions[0];
+
+  if (loading) {
+    return (
+      <div className="app-loading">
+        <div className="loading-glass">
+          <div className="loading-spinner" />
+          <p className="loading-text">กำลังโหลดข้อมูล...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <ToastProvider>
@@ -157,6 +230,17 @@ function App() {
         <Sidebar route={route} setRoute={setRoute} lowStockCount={lowStockCount} />
         <main className="main">
           <Topbar title={meta[route]?.title} sub={meta[route]?.sub} />
+
+          {dbError && (
+            <div style={{margin:'0 0 12px',padding:'10px 16px',background:'rgba(244,63,94,0.15)',border:'1px solid rgba(244,63,94,0.3)',borderRadius:8,color:'#fda4af',fontSize:13}}>
+              ⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้ — แสดงข้อมูลทดสอบแทน
+            </div>
+          )}
+          {!dbReady && !dbError && !isDbConfigured() && (
+            <div style={{margin:'0 0 12px',padding:'10px 16px',background:'rgba(245,158,11,0.12)',border:'1px solid rgba(245,158,11,0.3)',borderRadius:8,color:'#fcd34d',fontSize:13}}>
+              ⚙️ ยังไม่ได้ตั้งค่า Supabase — กำลังใช้ข้อมูลทดสอบ ดูคู่มือที่ <strong>SETUP.md</strong>
+            </div>
+          )}
 
           {route === 'dashboard'    && <DashboardScreen     store={store} setRoute={setRoute} />}
           {route === 'receive'      && <ReceiveScreen        store={store} doMovement={doMovement} />}

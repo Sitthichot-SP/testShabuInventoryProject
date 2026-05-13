@@ -24,8 +24,7 @@ window.DATA = (function() {
     { id: 'WH-KIT',  name: 'ครัวกลาง',         icon: '🍳', tempBand: 'พร้อมใช้',  bins: ['K1','K2'] },
   ];
 
-  // Stock per (sku, warehouse, bin)
-  // qty in unit of sku
+  // Fallback mock stock (ใช้เมื่อ DB ไม่พร้อม)
   const stock = [
     // วากิว — ห้องแช่แข็ง
     { sku: 'SHB-001', wh: 'WH-FREEZE', bin: 'F1', qty: 12.5, batch: 'B26-051', exp: '2026-08-12' },
@@ -61,7 +60,7 @@ window.DATA = (function() {
     { id: 'SUP-05', name: 'Yamato Dashi Supply' },
   ];
 
-  // Recent movements (last 14 days)
+  // Fallback mock movements (ใช้เมื่อ DB ไม่พร้อม)
   function dayAgo(d, h = 12, m = 0) {
     const dt = new Date('2026-05-13T18:00:00');
     dt.setDate(dt.getDate() - d);
@@ -103,7 +102,16 @@ window.DATA = (function() {
     return days;
   })();
 
-  return { skus, warehouses, stock, suppliers, movements, dailySeries, UNITS };
+  return {
+    skus, warehouses, suppliers, UNITS,
+    dailySeries,
+    // _mock* ใช้เป็น fallback เมื่อ Supabase ไม่พร้อม
+    _mockStock: stock,
+    _mockMovements: movements,
+    // stock และ movements จริงจะถูก overwrite โดย app.jsx หลัง load จาก DB
+    stock: [],
+    movements: [],
+  };
 })();
 
 // Utility fns
